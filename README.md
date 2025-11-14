@@ -271,4 +271,4 @@ This scanner is designed to be educational and professional. All code includes:
 
 ---
 
-**🎓 Perfect for demonstrating cybersecurity knowledge and practical skills in professional internship environments!**
+
