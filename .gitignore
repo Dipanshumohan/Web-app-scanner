@@ -1,0 +1,79 @@
+
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Reports and outputs
+reports/
+*.pdf
+*.html
+
+# Selenium
+chromedriver*
+geckodriver*
+*.exe
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Security
+.env
+config.ini
+secrets.json
+
+# Test results
+test_results/
+coverage/
+.coverage
+.pytest_cache/
+
+# Browser profiles
+selenium_profiles/
